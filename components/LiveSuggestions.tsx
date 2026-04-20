@@ -92,7 +92,7 @@ export default function LiveSuggestions({ onSuggestionClick }: Props) {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [isRecording, transcriptSig, generateSuggestions])
+  }, [isRecording, transcriptSig, transcript.length, generateSuggestions])
 
   const fmtTime = (ts: number) =>
     new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })

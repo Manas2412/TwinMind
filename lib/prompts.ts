@@ -64,7 +64,8 @@ Prior user/assistant turns are sent as separate messages after this system promp
 Answer the user's question with full context from the transcript. Be direct, specific, and practically useful. Cite specific things that were said when relevant. Use markdown for clarity.`
 
 export const DEFAULT_SETTINGS = {
-  model: 'openai/gpt-oss-120b',
+  // Groq: smaller instruct models respond much faster than 100B+ stacks for this UI.
+  model: 'llama-3.3-70b-versatile',
   transcriptionModel: 'whisper-large-v3',
   suggestionContextChunks: 3,
   chatContextChunks: 0,

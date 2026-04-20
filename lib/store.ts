@@ -50,13 +50,21 @@ export const useSettingsStore = create<SettingsState>()(
         if (fromVersion < 2) {
           const staleModels = new Set([
             'meta-llama/llama-4-maverick-17b-128e-instruct',
+            'llama-3.3-70b-versatile',
           ])
           if (!s.model || staleModels.has(s.model)) {
             s.model = DEFAULT_SETTINGS.model
           }
         }
-        // v2→v3: shorten suggestion cycle default
+        // v2→v3: default away from very large / slow chat models; shorten suggestion cycle default
         if (fromVersion < 3) {
+          const slowChatModels = new Set([
+            'openai/gpt-oss-120b',
+            'meta-llama/llama-4-maverick-17b-128e-instruct',
+          ])
+          if (!s.model || slowChatModels.has(s.model)) {
+            s.model = DEFAULT_SETTINGS.model
+          }
           if (s.refreshIntervalSecs === undefined || s.refreshIntervalSecs > 20) {
             s.refreshIntervalSecs = DEFAULT_SETTINGS.refreshIntervalSecs
           }
