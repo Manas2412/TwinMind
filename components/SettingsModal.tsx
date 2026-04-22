@@ -69,17 +69,17 @@ export default function SettingsModal({ open, onClose }: Props) {
               />
               <Field
                 label="Chat / Suggestions Model"
-                hint='Groq model ID for suggestions and chat. Default: openai/gpt-oss-120b'
+                hint="Groq model ID. Default: llama-3.1-8b-instant (sub-second). Try llama-3.3-70b-versatile for higher quality."
                 value={settings.model}
                 onChange={(v) => settings.updateSettings({ model: v })}
-                placeholder="meta-llama/llama-4-maverick-17b-128e-instruct"
+                placeholder="llama-3.1-8b-instant"
               />
               <Field
                 label="Transcription Model"
-                hint="Groq Whisper model ID."
+                hint="Groq Whisper model ID. Default: whisper-large-v3-turbo (fast, accurate)."
                 value={settings.transcriptionModel}
                 onChange={(v) => settings.updateSettings({ transcriptionModel: v })}
-                placeholder="whisper-large-v3"
+                placeholder="whisper-large-v3-turbo"
               />
             </>
           )}
@@ -135,12 +135,12 @@ export default function SettingsModal({ open, onClose }: Props) {
                 max={50}
               />
               <NumberField
-                label="Whisper backup interval (seconds)"
-                hint="How often audio is sliced and sent to Groq Whisper while recording. Live transcript and suggestions follow speech sooner via the browser; this is only the cloud backup cadence."
+                label="Whisper rolling-chunk interval (seconds)"
+                hint="How often audio is sliced and sent to Groq Whisper-turbo. Lower = faster transcript, slightly more API calls. 3–4s is the production sweet spot."
                 value={settings.refreshIntervalSecs}
                 onChange={(v) => settings.updateSettings({ refreshIntervalSecs: v })}
-                min={4}
-                max={120}
+                min={2}
+                max={30}
               />
             </>
           )}

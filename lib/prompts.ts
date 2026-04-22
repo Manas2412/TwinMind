@@ -64,11 +64,12 @@ Prior user/assistant turns are sent as separate messages after this system promp
 Answer the user's question with full context from the transcript. Be direct, specific, and practically useful. Cite specific things that were said when relevant. Use markdown for clarity.`
 
 export const DEFAULT_SETTINGS = {
-  // Groq: smaller instruct models respond much faster than 100B+ stacks for this UI.
-  model: 'llama-3.3-70b-versatile',
-  transcriptionModel: 'whisper-large-v3',
-  suggestionContextChunks: 3,
+  // Groq's fastest production LLM — sub-second first token for snappy live suggestions.
+  model: 'llama-3.1-8b-instant',
+  // Turbo Whisper: ~5-10x faster than v3 on Groq, ideal for 3-4s rolling chunks.
+  transcriptionModel: 'whisper-large-v3-turbo',
+  suggestionContextChunks: 4,
   chatContextChunks: 0,
-  // Whisper backup: slightly longer window = fuller phrases per Groq pass (live text still comes from the browser)
-  refreshIntervalSecs: 10,
+  // 4s rolling window: Whisper-turbo returns in <1s, so end-to-end latency stays under ~5s.
+  refreshIntervalSecs: 4,
 }

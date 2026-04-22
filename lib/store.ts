@@ -42,11 +42,9 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'twinmind-settings',
-      version: 3,
+      version: 4,
       migrate: (persisted: unknown, fromVersion: number) => {
         const s = persisted as Partial<SettingsState>
-        // v0→v1: initial
-        // v1→v2: fix incorrect model default
         if (fromVersion < 2) {
           const staleModels = new Set([
             'meta-llama/llama-4-maverick-17b-128e-instruct',
@@ -56,7 +54,6 @@ export const useSettingsStore = create<SettingsState>()(
             s.model = DEFAULT_SETTINGS.model
           }
         }
-        // v2→v3: default away from very large / slow chat models; shorten suggestion cycle default
         if (fromVersion < 3) {
           const slowChatModels = new Set([
             'openai/gpt-oss-120b',
@@ -66,6 +63,23 @@ export const useSettingsStore = create<SettingsState>()(
             s.model = DEFAULT_SETTINGS.model
           }
           if (s.refreshIntervalSecs === undefined || s.refreshIntervalSecs > 20) {
+            s.refreshIntervalSecs = DEFAULT_SETTINGS.refreshIntervalSecs
+          }
+        }
+        // v3→v4: switch to Whisper-turbo + 8b-instant + 4s cycle for sub-5s end-to-end latency
+        if (fromVersion < 4) {
+          const slowChatModels = new Set([
+            'openai/gpt-oss-120b',
+            'meta-llama/llama-4-maverick-17b-128e-instruct',
+            'llama-3.3-70b-versatile',
+          ])
+          if (!s.model || slowChatModels.has(s.model)) {
+            s.model = DEFAULT_SETTINGS.model
+          }
+          if (!s.transcriptionModel || s.transcriptionModel === 'whisper-large-v3') {
+            s.transcriptionModel = DEFAULT_SETTINGS.transcriptionModel
+          }
+          if (s.refreshIntervalSecs === undefined || s.refreshIntervalSecs > 6) {
             s.refreshIntervalSecs = DEFAULT_SETTINGS.refreshIntervalSecs
           }
         }

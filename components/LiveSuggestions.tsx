@@ -88,7 +88,7 @@ export default function LiveSuggestions({ onSuggestionClick }: Props) {
     debounceRef.current = setTimeout(() => {
       debounceRef.current = null
       void generateSuggestions()
-    }, 2000)
+    }, 1200)
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
@@ -131,7 +131,7 @@ export default function LiveSuggestions({ onSuggestionClick }: Props) {
         </button>
         <span className="text-xs text-gray-400 dark:text-gray-500">
           {isRecording
-            ? `Auto ~2s after new transcript text${
+            ? `Auto ~1s after new transcript text${
                 suggestionBatches[0] ? ` · latest ${fmtTime(suggestionBatches[0].timestamp)}` : ''
               }`
             : 'Record to enable auto-updates'}
