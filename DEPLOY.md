@@ -28,6 +28,10 @@ Anything from `t3.small` upward will run this comfortably.
 
 Point your domain's `A` record at the Elastic IP. TLS issuance fails if DNS isn't resolving when Caddy first starts.
 
+> **Cloudflare-fronted DNS:** create the `A` record with the orange cloud **OFF (DNS only / grey cloud)** for the first deploy. Caddy needs to answer the Let's Encrypt HTTP-01 challenge directly on port 80 — if Cloudflare proxies the request, the challenge fails.
+>
+> Once a cert is issued and the site is healthy, you can flip the cloud to **proxied (orange)** if you want Cloudflare's edge in front. If you do, set Cloudflare → SSL/TLS → encryption mode to **Full (strict)** so it forwards over HTTPS to your Caddy origin (which still has a valid public cert).
+
 ### 2. Install Docker on EC2
 
 SSH in, then:
@@ -178,7 +182,9 @@ To exercise the full stack with TLS locally, edit `Caddyfile` to use `:80 { ... 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `dial tcp: lookup <domain>` in Caddy logs | DNS not pointing at EC2 | Update A record, wait for propagation, restart Caddy (`docker compose restart caddy`) |
+| Cloudflare-fronted: cert issuance loops with `unauthorized` / `Connection refused` on `/.well-known/acme-challenge/` | A record is **proxied** (orange cloud); Cloudflare is intercepting the HTTP-01 challenge | Flip the record to **DNS only** (grey cloud), wait 1 minute, run `docker compose restart caddy`. Re-enable proxy only after the cert is issued, and switch SSL mode to **Full (strict)** |
 | Cert issuance loops with rate-limit error | You exceeded Let's Encrypt's 5-failures-per-hour cap during DNS setup | Wait an hour, or switch to staging issuer in `Caddyfile` while testing |
+| `appleboy/scp-action` fails with `tar: empty archive` | The deploy job is missing `actions/checkout@v4` before the scp step | Already fixed in `deploy.yml`; if you forked an older version, add the checkout step |
 | `unauthorized: authentication required` on `docker compose pull` | EC2 lost GHCR creds (e.g. host rebooted with no daemon login persisted) | Re-run the deploy workflow (it re-logs in) |
 | App boots but `/api/transcribe` returns 502 | The user hasn't pasted a Groq API key in Settings | Expected — keys are client-supplied; the proxy returns 401 without one |
 | `address already in use` on 80/443 | Another web server (apache2, nginx) is running | `sudo systemctl disable --now apache2 nginx` |

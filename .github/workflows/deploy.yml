@@ -70,6 +70,9 @@ jobs:
       url: https://${{ vars.APP_DOMAIN }}
 
     steps:
+      # Required so the next step can read docker-compose.yml + Caddyfile from the workspace.
+      - uses: actions/checkout@v4
+
       - name: Copy compose + Caddyfile to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
