@@ -1,0 +1,26 @@
+# Caddy auto-issues + auto-renews Let's Encrypt certs for {$APP_DOMAIN}.
+# All non-API traffic is reverse-proxied to the Next.js container on :3000.
+
+{$APP_DOMAIN} {
+    encode zstd gzip
+
+    # Long-lived browser caching for hashed Next.js assets.
+    @next_static path /_next/static/*
+    header @next_static Cache-Control "public, max-age=31536000, immutable"
+
+    # Streaming SSE for /api/chat — disable buffering on the proxy.
+    @sse path /api/chat
+    reverse_proxy @sse app:3000 {
+        flush_interval -1
+    }
+
+    reverse_proxy app:3000
+
+    tls {$ACME_EMAIL}
+
+    log {
+        output stdout
+        format console
+        level  INFO
+    }
+}

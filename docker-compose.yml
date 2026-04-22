@@ -1,0 +1,52 @@
+# Production stack for EC2: Next.js app behind Caddy (auto-TLS via Let's Encrypt).
+# Pulls a pre-built image from GHCR — no build happens on the EC2 box.
+#
+# Required env (passed in by the deploy workflow / .env file on the host):
+#   IMAGE_TAG     — full image ref, e.g. ghcr.io/manas2412/twinmind:sha-abcdef0
+#   APP_DOMAIN    — public domain pointing at this EC2, e.g. twinmind.example.com
+#   ACME_EMAIL    — contact email for Let's Encrypt cert issuance
+
+services:
+  app:
+    image: ${IMAGE_TAG}
+    container_name: twinmind-app
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - web
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: twinmind-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    networks:
+      - web
+
+networks:
+  web:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
