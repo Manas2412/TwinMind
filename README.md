@@ -46,10 +46,10 @@ This project solves that by acting as a **real-time cognitive assistant**.
 
 ### 🎤 Live Transcription
 
-* Records audio from mic
-* Chunks audio every ~30 seconds
-* Uses **Whisper Large V3 (via Groq)**
-* Auto-appends transcript in real time
+* Records mic audio with `MediaRecorder` (Opus/WebM)
+* **Dual-source pipeline**: browser SpeechRecognition for instant interim text, Whisper Large V3 for high-accuracy fills when SR is silent
+* Chunks audio every ~30 seconds (configurable)
+* Server-side hallucination filters: Whisper `no_speech_prob` / `avg_logprob` confidence gates, English language lock, non-Latin script rejection
 
 ---
 
@@ -128,11 +128,11 @@ Instead of generating long outputs, it focuses on:
 ```bash
 twinmind-clone/
 │
-├── app/                # Next.js frontend + API routes
-├── server/             # LLM + context logic
-├── agent/              # Prompt engineering system
-├── config/             # Default prompts
-├── lib/                # Utilities
+├── app/                # Next.js App Router pages + API routes
+│   └── api/            # /transcribe, /suggestions, /chat (Groq proxies)
+├── components/         # MicTranscript, Suggestions, ChatPanel, SettingsModal
+├── lib/                # Zustand store, prompts, types, helpers
+└── public/             # Static assets
 ```
 
 ---
@@ -289,8 +289,8 @@ Defines:
 
 * **Groq API**
 
-  * Whisper Large V3 (transcription)
-  * GPT-OSS 120B (suggestions + chat)
+  * Whisper Large V3 (transcription, English-locked, hallucination-filtered)
+  * `meta-llama/llama-4-maverick-17b-128e-instruct` (suggestions + chat, configurable in Settings)
 
 ---
 

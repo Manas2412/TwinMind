@@ -6,15 +6,19 @@ import { useSessionStore, useSettingsStore } from '@/lib/store'
 type SRInstance = {
   continuous: boolean
   interimResults: boolean
+  lang: string
   start: () => void
   stop: () => void
   onresult: ((event: {
     resultIndex: number
     results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>
   }) => void) | null
-  onerror: ((event: unknown) => void) | null
+  onerror: ((event: { error: string }) => void) | null
   onend: (() => void) | null
 }
+
+// Reject SR output containing non-Latin scripts (Cyrillic, Arabic, CJK, etc.)
+const NON_LATIN_RE = /[\u0400-\u04FF\u0600-\u06FF\u0900-\u097F\u4E00-\u9FFF\uAC00-\uD7AF]/
 
 export default function MicTranscript() {
   const { isRecording, transcript, setRecording, upsertRollingTranscript, commitTranscriptText } =
@@ -27,9 +31,14 @@ export default function MicTranscript() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const recognitionRef = useRef<SRInstance | null>(null)
-  const runCycleRef = useRef<() => Promise<void>>(async () => {})
+  const runCycleRef = useRef<() => void>(() => {})
   const earlyWhisperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const cycleBusyRef = useRef(false)
+
+  // How many SR finals were committed since the last Whisper cycle start.
+  // If > 0, SR already transcribed this window — skip Whisper to avoid garbage.
+  const srFinalsThisCycleRef = useRef(0)
+  // Prevents concurrent Whisper HTTP requests; recorder always restarts immediately.
+  const whisperInFlightRef = useRef(false)
 
   const interimTextRef = useRef('')
   const rollingDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -41,26 +50,15 @@ export default function MicTranscript() {
   const commitTextRef = useRef(commitTranscriptText)
   const setRecordingRef = useRef(setRecording)
 
-  useEffect(() => {
-    apiKeyRef.current = apiKey
-  }, [apiKey])
-  useEffect(() => {
-    transcriptionModelRef.current = transcriptionModel
-  }, [transcriptionModel])
-  useEffect(() => {
-    upsertRollingRef.current = upsertRollingTranscript
-  }, [upsertRollingTranscript])
-  useEffect(() => {
-    commitTextRef.current = commitTranscriptText
-  }, [commitTranscriptText])
-  useEffect(() => {
-    setRecordingRef.current = setRecording
-  }, [setRecording])
+  useEffect(() => { apiKeyRef.current = apiKey }, [apiKey])
+  useEffect(() => { transcriptionModelRef.current = transcriptionModel }, [transcriptionModel])
+  useEffect(() => { upsertRollingRef.current = upsertRollingTranscript }, [upsertRollingTranscript])
+  useEffect(() => { commitTextRef.current = commitTranscriptText }, [commitTranscriptText])
+  useEffect(() => { setRecordingRef.current = setRecording }, [setRecording])
 
   const startNewRecorder = useCallback((stream: MediaStream) => {
     const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg', 'audio/mp4']
       .find((t) => MediaRecorder.isTypeSupported(t)) ?? ''
-
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
     chunksRef.current = []
     recorder.ondataavailable = (e) => {
@@ -81,11 +79,7 @@ export default function MicTranscript() {
       const rec = new SR()
       rec.continuous = true
       rec.interimResults = true
-      try {
-        ;(rec as unknown as { maxAlternatives?: number }).maxAlternatives = 1
-      } catch {
-        /* optional */
-      }
+      rec.lang = 'en-US'
 
       rec.onresult = (event) => {
         let latestInterim = ''
@@ -94,8 +88,10 @@ export default function MicTranscript() {
           const text = result[0]?.transcript ?? ''
           if (result.isFinal) {
             const trimmed = text.trim()
-            if (trimmed) {
+            // Drop non-Latin output — SR occasionally picks up background audio
+            if (trimmed && !NON_LATIN_RE.test(trimmed)) {
               commitTextRef.current(trimmed)
+              srFinalsThisCycleRef.current += 1
               interimTextRef.current = ''
               upsertRollingRef.current('')
             }
@@ -103,35 +99,34 @@ export default function MicTranscript() {
             latestInterim = text
           }
         }
-        if (latestInterim) {
+        if (latestInterim && !NON_LATIN_RE.test(latestInterim)) {
           interimTextRef.current = latestInterim
           if (rollingDebounceRef.current) clearTimeout(rollingDebounceRef.current)
           rollingDebounceRef.current = setTimeout(() => {
             const t = interimTextRef.current.trim()
             if (t.length >= 3) upsertRollingRef.current(t)
-          }, 320)
-        } else {
+          }, 300)
+        } else if (!latestInterim) {
           interimTextRef.current = ''
         }
       }
 
-      rec.onerror = () => {
-        /* non-fatal — Whisper still runs on a timer */
+      rec.onerror = (e) => {
+        if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          console.warn('[SR] error:', e.error)
+        }
       }
+
       rec.onend = () => {
         if (recognitionRef.current === rec && streamRef.current) {
-          try {
-            rec.start()
-          } catch {
-            /* ignore */
-          }
+          try { rec.start() } catch { /* ignore race */ }
         }
       }
 
       recognitionRef.current = rec
       rec.start()
     } catch {
-      /* Web Speech unavailable */
+      /* Web Speech unavailable — Whisper handles everything */
     }
   }, [])
 
@@ -139,12 +134,7 @@ export default function MicTranscript() {
     const rec = recognitionRef.current
     recognitionRef.current = null
     if (rec) {
-      try {
-        rec.onend = null
-        rec.stop()
-      } catch {
-        /* ignore */
-      }
+      try { rec.onend = null; rec.stop() } catch { /* ignore */ }
     }
     interimTextRef.current = ''
     if (rollingDebounceRef.current) {
@@ -153,91 +143,96 @@ export default function MicTranscript() {
     }
   }, [])
 
-  const runCycle = useCallback(async () => {
-    if (cycleBusyRef.current) return
+  /**
+   * Core cycle:
+   * 1. Snapshot SR finals count then reset it.
+   * 2. Stop recorder, IMMEDIATELY restart it (zero audio gap).
+   * 3. If SR had ≥1 finals this window → SR already transcribed speech, skip Whisper.
+   * 4. Otherwise fire Whisper asynchronously (fire-and-forget).
+   */
+  const runCycle = useCallback(() => {
     const recorder = mediaRecorderRef.current
     const stream = streamRef.current
     if (!recorder || recorder.state === 'inactive' || !stream) return
 
-    cycleBusyRef.current = true
+    // Snapshot and reset before the stop so new SR finals go into the next cycle
+    const hadSrFinals = srFinalsThisCycleRef.current > 0
+    srFinalsThisCycleRef.current = 0
 
     try {
-      await new Promise<void>((resolve) => {
-        const onStop = async () => {
-          const rawChunks = chunksRef.current.slice()
-          chunksRef.current = []
+      if (recorder.state === 'recording') recorder.requestData()
+    } catch { /* ignore */ }
 
-          const mime = rawChunks[0]?.type || recorder.mimeType || 'audio/webm'
-          const blob =
-            rawChunks.length > 0 ? new Blob(rawChunks, { type: mime }) : new Blob([], { type: mime })
+    const onStop = () => {
+      const rawChunks = chunksRef.current.slice()
+      chunksRef.current = []
 
-          const minBytes = 650
-          if (blob.size >= minBytes && apiKeyRef.current) {
-            try {
-              const ext = mime.includes('ogg')
-                ? 'ogg'
-                : mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')
-                  ? 'm4a'
-                  : 'webm'
-              const filename = `chunk.${ext}`
-
-              const form = new FormData()
-              form.append('file', blob, filename)
-              form.append('filename', filename)
-              form.append('model', transcriptionModelRef.current)
-              const res = await fetch('/api/transcribe', {
-                method: 'POST',
-                headers: { 'x-api-key': apiKeyRef.current },
-                body: form,
-              })
-              if (res.ok) {
-                const { text } = await res.json()
-                const trimmed = (text ?? '').trim()
-                if (trimmed) commitTextRef.current(trimmed)
-              }
-            } catch (err) {
-              console.error('Transcription error:', err)
-            }
-          }
-
-          resolve()
-        }
-
-        try {
-          if (typeof recorder.requestData === 'function' && recorder.state === 'recording') {
-            recorder.requestData()
-          }
-        } catch {
-          /* ignore */
-        }
-
-        recorder.addEventListener('stop', onStop, { once: true })
-        try {
-          recorder.stop()
-        } catch {
-          resolve()
-        }
-      })
-
+      // Restart immediately — no audio gap regardless of Whisper latency
       if (streamRef.current) startNewRecorder(streamRef.current)
-    } finally {
-      cycleBusyRef.current = false
+
+      // SR already captured speech this window — Whisper would only add noise/duplicates
+      if (hadSrFinals) return
+
+      if (rawChunks.length === 0 || !apiKeyRef.current || whisperInFlightRef.current) return
+
+      const mime = rawChunks[0]?.type || recorder.mimeType || 'audio/webm'
+      const blob = new Blob(rawChunks, { type: mime })
+      if (blob.size < 500) return
+
+      whisperInFlightRef.current = true
+
+      const recentText = useSessionStore
+        .getState()
+        .transcript.filter((c) => c.kind !== 'rolling')
+        .slice(-3)
+        .map((c) => c.text)
+        .join(' ')
+        .slice(-150)
+
+      const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') || mime.includes('m4a') ? 'm4a' : 'webm'
+      const filename = `chunk.${ext}`
+      const form = new FormData()
+      form.append('file', blob, filename)
+      form.append('filename', filename)
+      form.append('model', transcriptionModelRef.current)
+      if (recentText) form.append('prompt', recentText)
+
+      fetch('/api/transcribe', {
+        method: 'POST',
+        headers: { 'x-api-key': apiKeyRef.current },
+        body: form,
+      })
+        .then(async (res) => {
+          if (res.ok) {
+            const { text } = await res.json()
+            const trimmed = (text ?? '').trim()
+            if (trimmed) commitTextRef.current(trimmed)
+          } else {
+            console.warn('[Whisper] non-ok:', res.status)
+          }
+        })
+        .catch((err) => console.error('[Whisper] fetch error:', err))
+        .finally(() => { whisperInFlightRef.current = false })
+    }
+
+    recorder.addEventListener('stop', onStop, { once: true })
+    try {
+      recorder.stop()
+    } catch {
+      if (streamRef.current) startNewRecorder(streamRef.current)
     }
   }, [startNewRecorder])
 
-  useEffect(() => {
-    runCycleRef.current = runCycle
-  }, [runCycle])
+  useEffect(() => { runCycleRef.current = runCycle }, [runCycle])
 
   useEffect(() => {
     if (!isRecording) return
-    intervalRef.current = setInterval(runCycle, refreshIntervalSecs * 1000)
+    intervalRef.current = setInterval(() => runCycleRef.current(), refreshIntervalSecs * 1000)
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
-  }, [isRecording, refreshIntervalSecs, runCycle])
+  }, [isRecording, refreshIntervalSecs])
 
-  // While recording, keep pushing interim recognition into the transcript as a rolling row
   useEffect(() => {
     if (!isRecording) return
     rollingTickRef.current = setInterval(() => {
@@ -259,6 +254,7 @@ export default function MicTranscript() {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
+          sampleRate: 16000,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -267,37 +263,26 @@ export default function MicTranscript() {
       })
       streamRef.current = stream
       interimTextRef.current = ''
+      srFinalsThisCycleRef.current = 0
+      whisperInFlightRef.current = false
       startNewRecorder(stream)
       startRecognition()
       setRecording(true)
+
       if (earlyWhisperTimerRef.current) clearTimeout(earlyWhisperTimerRef.current)
       earlyWhisperTimerRef.current = setTimeout(() => {
-        if (!useSessionStore.getState().isRecording) return
-        if (!streamRef.current || !mediaRecorderRef.current) return
-        void runCycleRef.current()
-      }, 3500)
+        if (useSessionStore.getState().isRecording) runCycleRef.current()
+      }, 5000)
     } catch {
       alert('Could not access microphone. Please grant mic permission and try again.')
     }
   }
 
   const stopRecording = useCallback(() => {
-    if (earlyWhisperTimerRef.current) {
-      clearTimeout(earlyWhisperTimerRef.current)
-      earlyWhisperTimerRef.current = null
-    }
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current)
-      intervalRef.current = null
-    }
-    if (rollingTickRef.current) {
-      clearInterval(rollingTickRef.current)
-      rollingTickRef.current = null
-    }
-    if (rollingDebounceRef.current) {
-      clearTimeout(rollingDebounceRef.current)
-      rollingDebounceRef.current = null
-    }
+    if (earlyWhisperTimerRef.current) { clearTimeout(earlyWhisperTimerRef.current); earlyWhisperTimerRef.current = null }
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null }
+    if (rollingTickRef.current) { clearInterval(rollingTickRef.current); rollingTickRef.current = null }
+    if (rollingDebounceRef.current) { clearTimeout(rollingDebounceRef.current); rollingDebounceRef.current = null }
     const recorder = mediaRecorderRef.current
     if (recorder && recorder.state !== 'inactive') recorder.stop()
     streamRef.current?.getTracks().forEach((t) => t.stop())
@@ -311,11 +296,8 @@ export default function MicTranscript() {
 
   useEffect(() => () => stopRecording(), [stopRecording])
 
-  /** Newest lines first (matches Live Suggestions column). Store stays chronological. */
   const transcriptNewestFirst = useMemo(() => [...transcript].reverse(), [transcript])
-
   const transcriptLineIdsKey = transcript.map((c) => c.id).join('|')
-
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0
   }, [transcriptLineIdsKey])
@@ -363,8 +345,8 @@ export default function MicTranscript() {
 
         <p className="text-xs text-gray-400 dark:text-gray-500 text-center leading-4">
           {isRecording
-            ? 'Words appear as you speak; suggestions refresh shortly after new text.'
-            : 'Click to start. Browser speech shows text as you talk; Groq transcribes audio periodically as a backup.'}
+            ? 'Words appear as you speak; Whisper fills in gaps when browser SR is silent.'
+            : 'Click to start. Browser speech shows text in real time; Whisper transcribes in the background.'}
         </p>
       </div>
 

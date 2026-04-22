@@ -9,7 +9,21 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: 'Missing Groq API key' }), { status: 401 })
   }
 
-  const body = await req.json()
+  let body: {
+    userMessage: string
+    transcript: string
+    chatHistory: { role: string; content: string }[]
+    prompt: string
+    detailedAnswerPrompt: string
+    model: string
+    isDetailedAnswer: boolean
+  }
+  try {
+    body = await req.json()
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400 })
+  }
+
   const MAX_TRANSCRIPT_CHARS = 14_000
   const MAX_HISTORY_TURNS = 24
 
@@ -21,15 +35,7 @@ export async function POST(req: NextRequest) {
     detailedAnswerPrompt,
     model,
     isDetailedAnswer,
-  } = body as {
-    userMessage: string
-    transcript: string
-    chatHistory: { role: string; content: string }[]
-    prompt: string
-    detailedAnswerPrompt: string
-    model: string
-    isDetailedAnswer: boolean
-  }
+  } = body
 
   const transcriptTrimmed =
     typeof transcript === 'string' && transcript.length > MAX_TRANSCRIPT_CHARS
@@ -43,13 +49,11 @@ export async function POST(req: NextRequest) {
   let messages: { role: string; content: string }[]
 
   if (isDetailedAnswer) {
-    // Clicking a suggestion → one-shot detailed expansion
     const filledPrompt = detailedAnswerPrompt
       .replace('{{transcript}}', transcriptTrimmed)
       .replace('{{user_message}}', userMessage)
     messages = [{ role: 'user', content: filledPrompt }]
   } else {
-    // Normal chat turn — do not paste full history into system AND again as messages (token bloat).
     const filledSystem = systemPrompt
       .replace('{{transcript}}', transcriptTrimmed)
       .replace(
@@ -65,32 +69,39 @@ export async function POST(req: NextRequest) {
 
   const maxTokens = isDetailedAnswer ? 900 : 640
 
-  const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.55,
-      max_tokens: maxTokens,
-      stream: true,
-    }),
-  })
+  try {
+    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.55,
+        max_tokens: maxTokens,
+        stream: true,
+      }),
+    })
 
-  if (!groqRes.ok) {
-    const err = await groqRes.text()
-    return new Response(err, { status: groqRes.status })
+    if (!groqRes.ok) {
+      const err = await groqRes.text()
+      return new Response(err, { status: groqRes.status })
+    }
+
+    return new Response(groqRes.body, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    })
+  } catch (err) {
+    console.error('[chat] Groq fetch error:', err)
+    return new Response(JSON.stringify({ error: 'Chat request failed', detail: String(err) }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
-
-  // Pass the Groq SSE stream straight through to the client
-  return new Response(groqRes.body, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    },
-  })
 }
