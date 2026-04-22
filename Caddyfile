@@ -16,7 +16,11 @@
 
     reverse_proxy app:3000
 
-    tls {$ACME_EMAIL}
+    # Auto-HTTPS is enabled implicitly by the named site address above.
+    # No `tls <email>` line — an empty ACME_EMAIL would expand to `tls `
+    # and crash the parser. Certs still issue (as an anonymous ACME
+    # account); if you want expiry emails, add `email {$ACME_EMAIL}` to
+    # a global options block once ACME_EMAIL is guaranteed non-empty.
 
     log {
         output stdout
