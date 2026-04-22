@@ -27,13 +27,16 @@ function isMostlyNonLatin(text: string): boolean {
   return nonLatin / stripped.length > 0.4
 }
 
-// Cap on concurrent Whisper requests in flight. Higher = no head-of-line blocking
-// when one request is slow; capped to avoid overloading on long sessions.
-const MAX_INFLIGHT_WHISPER = 3
-// Hard timeout for any single Whisper request — if Groq stalls, abort & move on.
-const WHISPER_TIMEOUT_MS = 12_000
-// Minimum RMS energy (0..1) to consider a chunk worth transcribing. Skips pure-silence chunks.
-const VAD_RMS_THRESHOLD = 0.005
+// Cap on concurrent Whisper requests. 2 is enough to absorb one slow request
+// without head-of-line blocking, while staying well under Groq free-tier rate limits.
+const MAX_INFLIGHT_WHISPER = 2
+// Hard timeout for any single Whisper request. Generous enough to survive a slow
+// network upload, tight enough that a stuck request can't pile up forever.
+const WHISPER_TIMEOUT_MS = 25_000
+// Minimum RMS energy (0..1) to count a chunk as voiced. Tuned slightly above
+// typical room-tone noise floor so silent-room chunks don't trigger Whisper
+// "thanks for watching" hallucinations.
+const VAD_RMS_THRESHOLD = 0.012
 
 export default function MicTranscript() {
   const { isRecording, transcript, setRecording, upsertRollingTranscript, commitTranscriptText } =

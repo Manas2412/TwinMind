@@ -3,12 +3,18 @@ import { NextRequest, NextResponse } from 'next/server'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-// Whisper's known idle/silence hallucinations. Kept to obvious filler so we never
-// drop short legitimate utterances ("yes", "okay", "you know" etc).
+// Whisper's known idle/silence hallucinations. Whisper was trained on a lot of
+// YouTube outros, so it loves emitting "thanks for watching" / "thank you" during
+// silence. We keep the filter list focused on those specific patterns so genuine
+// short utterances ("yes", "okay", "right") still pass through.
 const HALLUCINATION_STRINGS = new Set([
   'e aí', 'e ai', 'obrigado', 'obrigada', 'gracias', 'de nada',
   'merci', 'danke',
-  '...', '. . .', '♪', '[ music ]', '[music]', '[applause]',
+  'thank you', 'thank you.', 'thank you!', 'thanks', 'thanks.', 'thanks!',
+  'thank you so much', 'thank you so much.', 'thanks for watching',
+  'thanks for watching!', 'thanks for watching.',
+  'bye', 'bye.', 'bye!', 'goodbye', 'goodbye.',
+  '...', '. . .', '♪', '[ music ]', '[music]', '[applause]', '[silence]',
   'subtitles by the amara.org community',
   'субтитры создал dimatorzok',
   'субтитры добавил dimatorzok',
@@ -25,12 +31,43 @@ function isMostlyNonLatin(text: string): boolean {
   return nonLatin / stripped.length > 0.4
 }
 
+// Substring patterns Whisper emits during silence — catches variants like
+// "Thank you for watching this video!" without listing every permutation.
+const HALLUCINATION_PATTERNS = [
+  /\bthanks?\s+for\s+watching\b/i,
+  /\bthanks?\s+for\s+listening\b/i,
+  /\blike\s+and\s+subscribe\b/i,
+  /\bsee\s+you\s+(in\s+the\s+)?next\s+(video|episode)\b/i,
+]
+
 function isHallucination(text: string): boolean {
   const norm = text.trim().toLowerCase()
   if (!norm) return true
   if (HALLUCINATION_STRINGS.has(norm)) return true
   if (isMostlyNonLatin(norm)) return true
+  // Very short outputs that match silence-hallucination keywords
+  if (norm.length <= 40 && HALLUCINATION_PATTERNS.some((re) => re.test(norm))) return true
   return false
+}
+
+async function transcribeWithGroq(
+  apiKey: string,
+  audioBlob: Blob,
+  uploadName: string,
+  model: string,
+  prompt: string,
+): Promise<Response> {
+  const groqForm = new FormData()
+  groqForm.append('file', audioBlob, uploadName)
+  groqForm.append('model', model)
+  groqForm.append('response_format', 'verbose_json')
+  groqForm.append('language', 'en')
+  if (prompt) groqForm.append('prompt', prompt)
+  return fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: groqForm,
+  })
 }
 
 export async function POST(req: NextRequest) {
@@ -69,21 +106,18 @@ export async function POST(req: NextRequest) {
       : `audio.${extFromMime}`
 
   try {
-    const groqForm = new FormData()
-    groqForm.append('file', audioBlob, uploadName)
-    groqForm.append('model', model)
-    groqForm.append('response_format', 'verbose_json')
-    groqForm.append('language', 'en')   // ← lock to English; prevents Russian/Urdu/etc hallucinations
-    if (prompt) groqForm.append('prompt', prompt)
+    let groqRes = await transcribeWithGroq(apiKey, audioBlob, uploadName, model, prompt)
 
-    const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: groqForm,
-    })
+    // Transient 5xx / 429: one retry after a short backoff. Groq occasionally
+    // returns 502/503 under load; a single retry recovers without user impact.
+    if ((groqRes.status >= 500 || groqRes.status === 429) && groqRes.status !== 501) {
+      await new Promise((r) => setTimeout(r, 400))
+      groqRes = await transcribeWithGroq(apiKey, audioBlob, uploadName, model, prompt)
+    }
 
     if (!groqRes.ok) {
       const err = await groqRes.text()
+      console.warn('[transcribe] Groq', groqRes.status, err.slice(0, 200))
       return NextResponse.json({ error: err }, { status: groqRes.status })
     }
 
